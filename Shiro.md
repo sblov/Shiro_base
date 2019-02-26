@@ -476,6 +476,41 @@ DelegatingFilterProxy.java
   2). 实现 doGetAuthenticationInfo(AuthenticationToken) 方法. 
 6. 由 shiro 完成对密码的比对. 
 
+### 认证流程
+
+1、首先调用 Subject.login(token) 进行登录，其会自动委托给 SecurityManager 
+
+2、SecurityManager 负责真正的身份验证逻辑；它会委托给 Authenticator 进行身份验证； 
+
+3、Authenticator 才是真正的身份验证者，Shiro API 中核心的身份 认证入口点，此处可以自定义插入自己的实现； 
+
+4、Authenticator 可能会委托给相应的 AuthenticationStrategy 进 行多 Realm 身份验证，默认 ModularRealmAuthenticator 会调用 AuthenticationStrategy 进行多 Realm 身份验证； 
+
+5、Authenticator 会把相应的 token 传入 Realm，从 Realm 获取 身份验证信息，如果没有返回/抛出异常表示身份验证失败了。此处 可以配置多个Realm，将按照相应的顺序及策略进行访问。 
+
+![](img/token.png)
+
+### Realm
+
+​	**Realm**：**Shiro** 从 **Realm** 获取安全数据（如用户、角色、 权限），即 **SecurityManager** 要验证用户身份，那么它需 要从 **Realm** 获取相应的用户进行比较以确定用户身份是否 合法；也需要从**Realm**得到用户相应的角色/权限进行验证 用户是否能进行操作。
+
+​	一般继承 **AuthorizingRealm**（授权）即可；其继承了**AuthenticatingRealm**（即身份验证），而且也间接继承了**CachingRealm**（带有缓存实现）
+
+### Authenticator 
+
+​	**Authenticator** 的职责是验证用户帐号，是 Shiro API 中身份验证**核心的入口点**：如果验证成功，将返回**AuthenticationInfo** 验证信息；此信息中包含了身份及凭证；如果验证失败将抛出相应 的 **AuthenticationException** 异常 
+
+​	 **SecurityManager** 接口继承了 **Authenticator**，另外还有一个 **ModularRealmAuthenticator**实现，其委托给多个**Realm** 进行 验证，验证规则通过 **AuthenticationStrategy** 接口指定 
+
+### AuthenticationStrategy 
+
+​	**AuthenticationStrategy** 接口的默认实现（认证策略）：
+
+- **FirstSuccessfulStrategy**：只要有一个 Realm 验证成功即可，只返回第 一个 Realm 身份验证成功的认证信息，其他的忽略； 
+-  **AtLeastOneSuccessfulStrategy**：只要有一个Realm验证成功即可，和 FirstSuccessfulStrategy 不同，将返回所有Realm身份验证成功的认证信 息；
+-  **AllSuccessfulStrategy**：所有Realm验证成功才算成功，且返回所有 Realm身份验证成功的认证信息，如果有一个失败就失败了。 
+- **ModularRealmAuthenticator** 默认是 AtLeastOneSuccessfulStrategy 策略 
+
 ### 实现认证
 
 ​	以集成spring时的代码为基础：
@@ -661,7 +696,7 @@ Object principal = username;
 
 ​	将传入token，加上从info中传入的salt值进行加密，再与info中的（从数据库查出的密码）credentials进行比较
 
-### 多realm&认证策略
+### 多realm
 
 ```xml
 <!--  
@@ -701,6 +736,340 @@ Object principal = username;
 ```
 
 ## 授权
+
+- **授权**，也叫==访问控制，即在应用中控制谁访问哪些资源==（如访问页面/编辑数据/页面操作 等）。在授权中需了解的几个关键对象：主体（Subject）、资源（Resource）、权限 （Permission）、角色（Role）。 
+- **主体(Subject)**：访问应用的用户，在 Shiro 中使用 Subject 代表该用户。用户只有授权 后才允许访问相应的资源。 
+- **资源(Resource)**：==在应用中用户可以访问的 URL==，比如访问 JSP 页面、查看/编辑某些 数据、访问某个业务方法、打印文本等等都是资源。用户只要授权后才能访问。 
+- **权限(Permission)**：安全策略中的原子授权单位，通过权限我们可以表示在应用中用户 有没有操作某个资源的权力。即==权限表示在应用中用户能不能访问某个资源==，如：访问用 户列表页面查看/新增/修改/删除用户数据（即很多时候都是CRUD（增查改删）式权限控 制）等。权限代表了用户有没有操作某个资源的权利，即反映在某个资源上的操作允不允 许。 
+- Shiro 支持粗粒度权限（如用户模块的所有权限）和细粒度权限（操作某个用户的权限， 即实例级别的） 
+- **角色(Role)**：==权限的集合==，一般情况下会赋予用户角色而不是权限，即这样用户可以拥有 一组权限，赋予权限时比较方便。典型的如：项目经理、技术总监、CTO、开发工程师等 都是角色，不同的角色拥有一组不同的权限。 
+
+### 授权方式
+
+- **编程式**：通过写if/else 授权代码块完成 
+
+  ```java
+  if(subject.hasRole("admin")){
+      ....
+  }else{
+      ....
+  }
+  ```
+
+- **注解式**：通过在执行的Java方法上放置相应的注解完成，没有权限将抛出相 应的异常 
+
+  ```java
+  @RequireRoles("admin")
+  public void hello(){
+      ....
+  }
+  ```
+
+- **JSP/GSP 标签：**在JSP/GSP 页面通过相应的标签完成 
+
+  ```html
+  <shiro:hasRole name="admin">
+  	...
+  </shiro:hasRole>
+  ```
+
+### 默认拦截器 
+
+​	Shiro 内置了很多默认的拦截器，比如身份验证、授权等 相关的。默认拦截器可以参考 **org.apache.shiro.web.filter.mgt.DefaultFilter**中的枚举 拦截器： 
+
+```java
+public enum DefaultFilter {
+
+    anon(AnonymousFilter.class),
+    authc(FormAuthenticationFilter.class),
+    authcBasic(BasicHttpAuthenticationFilter.class),
+    logout(LogoutFilter.class),
+    noSessionCreation(NoSessionCreationFilter.class),
+    perms(PermissionsAuthorizationFilter.class),
+    port(PortFilter.class),
+    rest(HttpMethodPermissionFilter.class),
+    roles(RolesAuthorizationFilter.class),
+    ssl(SslFilter.class),
+    user(UserFilter.class);
+..............
+```
+
+![](img/rz.png)
+
+![](img/sq.png)
+
+![](img/ot.png)
+
+### Permissions 
+
+- **规则：**
+
+  `资源标识符 ：操作 ：对象实例ID `即对哪个资源的哪个 实例可以进行什么操作. **其默认支持通配符权限字符串，`: `表示资源/操作/实例的分割；`, `表示操作的分割，`* `表示任意资 源/操作/实例。** 
+
+- **多层次管理：**
+
+  – 例如：`user:query`、`user:edit `
+
+  – **冒号是一个特殊字符，它用来分隔权限字符串的下一部件**：第一部分 是权限被操作的领域（打印机），第二部分是被执行的操作。 
+
+  – 多个值：**每个部件能够保护多个值**。因此，除了授予用户 `user:query` 和 `user:edit `权限外，也可以简单地授予他们一个：`user:query, edit` 
+
+  – 还可以用**` * `号代替所有的值**，如：`user:* `， 也可以写：`*:query`，表示 某个用户在所有的领域都有 query 的权限 
+
+### Shiro 的 Permissions 
+
+​	**实例级访问控制** 
+
+- 这种情况通常会使用三个部件：**域、操作、被付诸实施的实例**。如：user:edit:manager 
+- 也**可以使用通配符**来定义，如：`user:edit:*`、`user:*:*`、 `user:*:manager `
+- **部分省略通配符**：缺少的部件意味着用户可以访问所 有与之匹配的值，比如：`user:edit `等价于 `user:edit :*`、 `user `等价于` user:*:* `
+- 注意：**通配符只能从字符串的结尾处省略部件**，也就 是说 `user:edit `并不等价于` user:*:edit `
+
+### 授权流程 
+
+![](img/permit.png)
+
+​	流程如下：
+
+- 1、首先调用 Subject.isPermitted*/hasRole* 接口，其会委托给 SecurityManager，而 SecurityManager 接着会委托给 Authorizer；
+- 2、Authorizer是真正的授权者，如果调用如 isPermitted(“user:view”)，其首先会通过PermissionResolver 把字符串转换成相应的 Permission 实例； 
+- 3、在进行授权之前，其会调用相应的 Realm 获取 Subject 相应的角 色/权限用于匹配传入的角色/权限； 
+- 4、Authorizer 会判断 Realm 的角色/权限是否和传入的匹配，如果 有多个Realm，会委托给 ModularRealmAuthorizer 进行循环判断， 如果匹配如 isPermitted*/hasRole* 会返回true，否则返回false表示 授权失败。 
+
+### ModularRealmAuthorizer 
+
+ModularRealmAuthorizer 进行多 Realm 匹配流程：
+
+- 1、首先检查相应的 Realm 是否实现了实现了Authorizer；
+- 2、如果实现了 Authorizer，那么接着调用其相应的 isPermitted*/hasRole* 接口进行匹配； 
+- 3、如果有一个Realm匹配那么将返回 true，否则返回 false。 
+
+### 实现授权Realm
+
+​	自定义继承自AuthorizingRealm 的Realm；AuthorizingRealm 继承了 AuthenticatingRealm
+
+```java
+public class ShiroRealm  extends AuthorizingRealm {
+......................
+//授权Authorization
+	@Override
+	protected AuthorizationInfo doGetAuthorizationInfo(PrincipalCollection principals) {
+		
+		//1. 从 PrincipalCollection 中来获取登录用户的信息
+		Object principal = principals.getPrimaryPrincipal();
+		
+		//2. 利用登录的用户的信息来用户当前用户的角色或权限(可能需要查询数据库)
+		Set<String> roles = new HashSet<>();
+		roles.add("user");
+		if("admin".equals(principal)){
+			roles.add("admin");
+		}
+		
+		//3. 创建 SimpleAuthorizationInfo, 并设置其 roles 属性.
+		SimpleAuthorizationInfo info = new SimpleAuthorizationInfo(roles);
+		
+		//4. 返回 SimpleAuthorizationInfo 对象. 
+		return info;
+	}
+```
+
+```xml
+		/user.jsp = roles[user]
+         /admin.jsp = roles[admin]
+```
+
+```html
+	<a href="user.jsp">user</a>
+	<a href="admin.jsp">admin</a>
+```
+
+### Shiro 标签 
+
+​	Shiro 提供了 JSTL 标签用于在 JSP 页面进行权限控制，如 根据登录用户显示相应的页面按钮 
+
+**guest** 标签：用户没有身份验证时显示相应信息，即游客 访问信息： 
+
+```html
+<shiro:guest>
+	<a href="login.jsp">login</a>
+</shiro:guest>
+```
+
+**user** 标签：用户已经经过认证/记住我登录后显示相应的信 息。 
+
+```html
+<shiro:user>
+	welcome <shiro:principal/>,<a href="logout.jsp">logout</a>
+</shiro:user>
+```
+
+**authenticated** 标签：用户已经身份验证通过，即 Subject.login登录成功，不是记住我登录的 
+
+```html
+<shiro:authenticated>
+	usrer <shiro:principal/> has authenticated
+</shiro:authenticated>
+```
+
+**notAuthenticated** 标签：用户未进行身份验证，即没有调 用Subject.login进行登录，包括记住我自动登录的也属于 未进行身份验证。 
+
+```html
+<shiro:notAuthenticated>
+	notAuthenticated 
+</shiro:notAuthenticated>
+```
+
+**principal** 标签：显示用户身份信息，默认调用 Subject.getPrincipal() 获取，即 Primary Principal。 
+
+```html
+<shiro:principal property="username"></shiro:principal>
+```
+
+**hasRole** 标签：如果当前 Subject 有角色将显示 body 体内 容： 
+
+```html
+<shiro:hasRole name="admin">
+	user <shiro:principal/> has role admin<br/>
+</shiro:hasRole>
+```
+
+**hasAnyRoles** 标签：如果当前Subject有任意一个 角色（或的关系）将显示body体内容。 
+
+```html
+<shiro:hasAnyRoles name="admin,user">
+	user <shiro:principal/> has role admin or user<br/>
+</shiro:hasAnyRoles>
+```
+
+**lacksRole**：如果当前 Subject 没有角色将显 示 body 体内容 
+
+```html
+<shiro:lacksRole name="admin">
+	user <shiro:principal/> hasn`t role admin
+</shiro:lacksRole>
+```
+
+**hasPermission**：如果当前 Subject 有权限 将显示 body 体内容 
+
+```html
+<shiro:hasPermission name="user:create">
+	user <shiro:principal/> has permission 'user:create'
+</shiro:hasPermission>
+```
+
+**lacksPermission**：如果当前Subject没有权 限将显示body体内容 
+
+```html
+<shiro:lacksPermission name="user:create">
+	user <shiro:principal/> hasn`t permission 'user:create'
+</shiro:lacksPermission>
+```
+
+### 权限注解 
+
+- @RequiresAuthentication：表示当前Subject已经通过login 进行了身份验证；即 Subject. isAuthenticated() 返回 true 
+- @RequiresUser：表示当前 Subject 已经身份验证或者通过记 住我登录的。
+- @RequiresGuest：表示当前Subject没有身份验证或通过记住 我登录过，即是游客身份。
+- @RequiresRoles(value={“admin”, “user”}, logical= Logical.AND)：表示当前 Subject 需要角色 admin 和user
+- @RequiresPermissions (value={“user:a”, “user:b”}, logical= Logical.OR)：表示当前 Subject 需要权限 user:a 或 user:b。 
+
+```java
+ShiroService.java------------------
+
+public class ShiroService {
+	
+	@RequiresRoles({"admin"})
+	public void testMethod(){
+		System.out.println("testMethod, time: " + new Date());
+		
+		Session session = SecurityUtils.getSubject().getSession();
+		Object val = session.getAttribute("key");
+		
+		System.out.println("Service SessionVal: " + val);
+	}
+	
+}
+```
+
+```java
+ShiroController.java--------------------
+
+	@Autowired
+	private ShiroService shiroService;
+	
+	@RequestMapping("/testShiroAnnotation")
+	public String testShiroAnnotation(HttpSession session){
+		session.setAttribute("key", "value12345");
+		shiroService.testMethod();
+		return "redirect:/list.jsp";
+	}
+```
+
+```xml
+<bean id="shiroService"
+    	class="com.lov.service.ShiroService"></bean> 
+```
+
+### 自定义拦截器 
+
+​	通过自定义拦截器可以扩展功能，例如：动态url-角色/权 限访问控制的实现、根据 Subject 身份信息获取用户信息 绑定到 Request（即设置通用数据）、验证码验证、在线 用户信息的保存等 
+
+**设置filterChainDefinitionMap属性**
+
+```xml
+<bean id="shiroFilter" class="org.apache.shiro.spring.web.ShiroFilterFactoryBean">
+        <property name="securityManager" ref="securityManager"/>
+        <property name="loginUrl" value="/login.jsp"/>
+        <property name="successUrl" value="/list.jsp"/>
+        <property name="unauthorizedUrl" value="/unauthorized.jsp"/>
+        
+       <property name="filterChainDefinitionMap" ref="filterChainDefinitionMap"></property> 
+        <!-- 使用上面的设置属性 -->
+        <!-- <property name="filterChainDefinitions">
+            <value>
+                /login.jsp = anon
+                /shiro/login = anon
+                /shiro/logout = logout
+                
+                /user.jsp = roles[user]
+                /admin.jsp = roles[admin]
+                
+                # everything else requires authentication:
+                /** = authc
+            </value>
+        </property> -->
+    </bean>
+    
+    <!-- 配置一个 bean, 该 bean 实际上是一个 Map. 通过实例工厂方法的方式 -->
+   <bean id="filterChainDefinitionMap" 
+    	factory-bean="filterChainDefinitionMapBuilder" factory-method="buildFilterChainDefinitionMap"></bean>
+    
+    <bean id="filterChainDefinitionMapBuilder"
+    	class="com.lov.factory.FilterChainDefinitionMapBuilder"></bean>
+```
+
+```java
+FilterChainDefinitionMapBuilder.java---------------
+
+public class FilterChainDefinitionMapBuilder {
+
+	public LinkedHashMap<String, String> buildFilterChainDefinitionMap(){
+		LinkedHashMap<String, String> map = new LinkedHashMap<>();
+		
+		map.put("/login.jsp", "anon");
+		map.put("/shiro/login", "anon");
+		map.put("/shiro/logout", "logout");
+		map.put("/user.jsp", "authc,roles[user]");
+		map.put("/admin.jsp", "authc,roles[admin]");
+		map.put("/list.jsp", "user");
+		
+		map.put("/**", "authc");
+		
+		return map;
+	}
+	
+}
+```
 
 ## 会话管理
 
