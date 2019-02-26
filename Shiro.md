@@ -458,6 +458,248 @@ DelegatingFilterProxy.java
 
 ## 认证
 
+### Shiro外部架构
+
+![](img/shiro-struct.png)
+
+### 认证思路分析
+
+1. 获取当前的 Subject. 调用 SecurityUtils.getSubject();
+2. 测试当前的用户是否已经被认证. 即是否已经登录. 调用 Subject 的 isAuthenticated() 
+3. 若没有被认证, 则把用户名和密码封装为 UsernamePasswordToken 对象
+  1). 创建一个表单页面
+  2). 把请求提交到 SpringMVC 的 Handler
+  3). 获取用户名和密码. 
+4. 执行登录: 调用 Subject 的 login(AuthenticationToken) 方法. 
+5. 自定义 Realm 的方法, 从数据库中获取对应的记录, 返回给 Shiro.
+  1). 实际上需要继承 org.apache.shiro.realm.AuthenticatingRealm 类
+  2). 实现 doGetAuthenticationInfo(AuthenticationToken) 方法. 
+6. 由 shiro 完成对密码的比对. 
+
+### 实现认证
+
+​	以集成spring时的代码为基础：
+
+ShiroController.java
+
+```java
+@Controller
+@RequestMapping("/shiro")
+public class ShiroController {
+
+	@RequestMapping("/login")
+	public String shiroLogin(@RequestParam("username") String username,@RequestParam("password") String password){
+		//获取Subject
+        Subject currentUser = SecurityUtils.getSubject();
+		//认证
+		if (!currentUser.isAuthenticated()) {
+			UsernamePasswordToken token = new UsernamePasswordToken(username, password);
+			token.setRememberMe(true);
+			
+			try {
+                //可断点跟踪
+                //这里传入的token会传到配置的realm中
+				currentUser.login(token);
+			} catch (AuthenticationException e) {
+				System.out.println("login filed:"+e.getMessage());
+			}
+		}
+		
+		return "redirect:/list.jsp";
+	}
+	
+}
+```
+
+ShiroRealm.java
+
+```java
+//继承AuthenticatingRealm，而不是实现Realm
+public class ShiroRealm  extends AuthenticatingRealm{
+
+	@Override
+	protected AuthenticationInfo doGetAuthenticationInfo(AuthenticationToken token) throws AuthenticationException {
+//		System.out.println("doGetAuthenticationInfo:"+token);
+		//1、将AuthenticationToken强转为UsernamePasswordToken
+		UsernamePasswordToken upToken = (UsernamePasswordToken)token;
+		//2、获取username
+		String username =  upToken.getUsername();
+		//3、数据库查询
+		System.out.println("从数据库获取"+username+"的信息");
+		//4、异常检测
+		if ("unknown".equals(username)) {
+			throw new UnknownAccountException("user not exist");
+		}
+		if ("master".equals(username)) {
+			throw new LockedAccountException("user been locked");
+		}
+		
+		//5、根据用户情况，构建AuthenticationInfo对象并返回，通常使用SimpleAuthenticationInfo
+		//认证实体信息
+		Object principal = username;
+		//密码
+		Object credentials  = "000";
+		//当前realm对象的name
+		String realmName = getName();
+		
+		SimpleAuthenticationInfo info = new SimpleAuthenticationInfo(principal, credentials, realmName);
+		
+		return info;
+	}
+
+}
+```
+
+​	对应特定的路径访问，都需要在shiro的url拦截链中注册单独的访问权限；对于登录的用户，都会有用户缓存，不会再调用realm中的方法；只有通过logout登出`<a href="shiro/logout">logout</a>`
+
+### 密码对比
+
+​	在UsernamePasswordToken的getPassword方法打断点，因为进行密码对比，一定会调用该方法
+
+![](img/match.png)
+
+```java
+//主要在该类的doCredentialsMatch方法中进行比较
+SimpleCredentialsMatcher.java
+
+public boolean doCredentialsMatch(AuthenticationToken token, AuthenticationInfo info) {
+        Object tokenCredentials = getCredentials(token);
+        Object accountCredentials = getCredentials(info);
+        return equals(tokenCredentials, accountCredentials);
+    }
+```
+
+```java
+//AuthenticatingRealm抽象类中的assertCredentialsMatch方法，获取matcher并调用
+AuthenticatingRealm.java
+
+protected void assertCredentialsMatch(AuthenticationToken token, AuthenticationInfo info) throws AuthenticationException {
+        CredentialsMatcher cm = getCredentialsMatcher();
+        if (cm != null) {
+            if (!cm.doCredentialsMatch(token, info)) {
+                //not successful - throw an exception to indicate this:
+                String msg = "Submitted credentials for token [" + token + "] did not match the expected credentials.";
+                throw new IncorrectCredentialsException(msg);
+            }
+        } else {
+            throw new AuthenticationException("A CredentialsMatcher must be configured in order to verify " +
+                    "credentials during authentication.  If you do not wish for credentials to be examined, you " +
+                    "can configure an " + AllowAllCredentialsMatcher.class.getName() + " instance.");
+        }
+    }
+```
+
+### MD5加密
+
+配置realm的credentialsMatcher属性
+
+```xml
+ <bean id="jdbcRealm" class="com.lov.realms.ShiroRealm">
+   		<property name="credentialsMatcher">
+			  <bean class="org.apache.shiro.authc.credential.HashedCredentialsMatcher">
+    			<property name="hashAlgorithmName" value="MD5"></property>
+    			<!-- 加密次数 -->
+    			<property name="hashIterations" value="1024"></property>
+    		</bean> 			
+   		</property>
+    </bean>
+```
+
+断点分析：
+
+```java
+//配置后使用HashedCredentialsMatcher
+HashedCredentialsMatcher.java
+---------------------doCredentialsMatch
+@Override
+    public boolean doCredentialsMatch(AuthenticationToken token, AuthenticationInfo info) {
+        Object tokenHashedCredentials = hashProvidedCredentials(token, info);
+        Object accountCredentials = getCredentials(info);
+        return equals(tokenHashedCredentials, accountCredentials);
+    }
+---------------------hashProvidedCredentials
+protected Object hashProvidedCredentials(AuthenticationToken token, AuthenticationInfo info) {
+        Object salt = null;
+        if (info instanceof SaltedAuthenticationInfo) {
+            salt = ((SaltedAuthenticationInfo) info).getCredentialsSalt();
+        } else {
+            //retain 1.0 backwards compatibility:
+            if (isHashSalted()) {
+                salt = getSalt(token);
+            }
+        }
+        return hashProvidedCredentials(token.getCredentials(), salt, getHashIterations());
+    }
+---------------------hashProvidedCredentials 
+  protected Hash hashProvidedCredentials(Object credentials, Object salt, int hashIterations) {
+        String hashAlgorithmName = assertHashAlgorithmName();
+        return new SimpleHash(hashAlgorithmName, credentials, salt, hashIterations);
+    }
+```
+
+#### MD5盐值加密
+
+​	防止不同用户相同密码时，加密的结果也一样
+
+```java
+Object principal = username;
+		//密码
+		Object credentials = null;
+		if (username.equals("user")) {
+			credentials = "2bbffae8c52dd2532dfe629cecfb2c85";
+		}else if (username.equals("admin")) {
+			credentials = "c41d7c66e1b8404545aa3a0ece2006ac";
+		} 
+		//当前realm对象的name
+		String realmName = getName();
+		
+		SimpleAuthenticationInfo info = null;//new SimpleAuthenticationInfo(principal, credentials, realmName);
+		
+		ByteSource credentialsSalt = ByteSource.Util.bytes(username);
+		info = new SimpleAuthenticationInfo(principal, credentials, credentialsSalt , realmName);
+```
+
+​	将传入token，加上从info中传入的salt值进行加密，再与info中的（从数据库查出的密码）credentials进行比较
+
+### 多realm&认证策略
+
+```xml
+<!--  
+    1. 配置 SecurityManager!
+    -->     
+    <bean id="securityManager" class="org.apache.shiro.web.mgt.DefaultWebSecurityManager">
+        <property name="cacheManager" ref="cacheManager"/>
+        <property name="authenticator" ref="authenticator"></property>
+        <!-- 该属性最后会被设置到ModularRealmAuthenticator类中 -->
+        <property name="realms">
+        	<list>
+    			<ref bean="jdbcRealm"/>
+    			<ref bean="secondRealm"/>
+    		</list>
+        </property>
+        
+        <property name="rememberMeManager.cookie.maxAge" value="10"></property>
+    </bean>
+ ........................................
+
+<!-- 当有多个realm时，配置该bean -->
+    <bean id="authenticator" 
+    	class="org.apache.shiro.authc.pam.ModularRealmAuthenticator">
+    	<property name="authenticationStrategy">
+    		<!-- 更改多realm的认证策略 -->
+    		<bean class="org.apache.shiro.authc.pam.AtLeastOneSuccessfulStrategy"></bean>
+    	</property>
+        <!--
+		可以直接在SecurityManager中设置
+        <property name="realms">
+        	<list>
+    			<ref bean="jdbcRealm"/>
+    			<ref bean="secondRealm"/>
+    		</list>
+        </property> -->
+    </bean>
+```
+
 ## 授权
 
 ## 会话管理
