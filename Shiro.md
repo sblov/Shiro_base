@@ -1073,6 +1073,126 @@ public class FilterChainDefinitionMapBuilder {
 
 ## 会话管理
 
+​	Shiro 提供了完整的企业级会话管理功能，不依赖于底层容 器（如web容器tomcat），不管 JavaSE 还是 JavaEE 环境 都可以使用，提供了会话管理、会话事件监听、会话存储/ 持久化、容器无关的集群、失效/过期支持、对Web 的透明 支持、SSO 单点登录的支持等特性。 
+
+### API
+
+- Subject.getSession()：即可获取会话；其等价于 Subject.getSession(true)，即如果当前没有创建 Session 对象会创建 一个；Subject.getSession(false)，如果当前没有创建 Session 则返回 nul
+- session.getId()：获取当前会话的唯一标识 
+- session.getHost()：获取当前Subject的主机地址
+- session.getTimeout() & session.setTimeout(毫秒)：获取/设置当 前Session的过期时间
+- session.getStartTimestamp() & session.getLastAccessTime()： 获取会话的启动时间及最后访问时间；如果是 JavaSE 应用需要自己定 期调用 session.touch() 去更新最后访问时间；如果是 Web 应用，每 次进入 ShiroFilter 都会自动调用 session.touch() 来更新最后访问时间。 
+- session.touch() & session.stop()：更新会话最后访问时 间及销毁会话；当Subject.logout()时会自动调用 stop 方法 来销毁会话。如果在web中，调用 HttpSession. invalidate() 也会自动调用Shiro Session.stop 方法进行销毁Shiro 的会 话 
+- session.setAttribute(key, val) & session.getAttribute(key) & session.removeAttribute(key)：设置/获取/删除会话属 性；在整个会话范围内都可以对这些属性进行操作 
+
+```java
+ShiroController.java
+session.setAttribute("key", "value12345");
+---------------------------------------------------------
+ShiroService.java
+Session session = SecurityUtils.getSubject().getSession();
+		Object val = session.getAttribute("key");
+```
+
+### 会话监听器 
+
+​	会话监听器用于监听会话创建、过期及停止事件 
+
+![](img/listener.png)
+
+### SessionDao
+
+- AbstractSessionDAO 提供了 SessionDAO 的基础实现， 如生成会话ID等 
+- CachingSessionDAO 提供了对开发者透明的会话缓存的 功能，需要设置相应的 CacheManager
+- MemorySessionDAO 直接在内存中进行会话维护
+- EnterpriseCacheSessionDAO 提供了缓存功能的会话维 护，默认情况下使用 MapCache 实现，内部使用 ConcurrentHashMap 保存缓存的会话。 
+
+![](img/dao.png)
+
+​	**MySessionDao.java**
+
+​	**SerializableUtils.java**
+
+### 会话验证
+
+- Shiro 提供了会话验证调度器，用于定期的验证会话是否 已过期，如果过期将停止会话
+- 出于性能考虑，一般情况下都是获取会话时来验证会话是 否过期并停止会话的；但是如在 web 环境中，如果用户不 主动退出是不知道会话是否过期的，因此需要定期的检测 会话是否过期，Shiro 提供了会话验证调度器 SessionValidationScheduler
+- Shiro 也提供了使用Quartz会话验证调度器： QuartzSessionValidationScheduler 
+
 ## 缓存
 
+### CacheManagerAware
+
+- Shiro 内部相应的组件（DefaultSecurityManager）会自 动检测相应的对象（如Realm）是否实现了 CacheManagerAware 并自动注入相应的 CacheManager。 
+
+### Realm 缓存 
+
+- Shiro 提供了 CachingRealm，其实现了 CacheManagerAware 接口，提供了缓存的一些基础实现； 
+- AuthenticatingRealm 及 AuthorizingRealm 也分别提 供了对AuthenticationInfo 和 AuthorizationInfo 信息的缓存。 
+
+### Session 缓存 
+
+- 如 SecurityManager 实现了 SessionSecurityManager， 其会判断 SessionManager 是否实现了 CacheManagerAware 接口，如果实现了会把 CacheManager 设置给它。
+- SessionManager 也会判断相应的 SessionDAO（如继承 自CachingSessionDAO）是否实现了 CacheManagerAware，如果实现了会把 CacheManager 设置给它
+- 设置了缓存的 SessionManager，查询时会先查缓存，如 果找不到才查数据库。 
+
+```xml
+<bean id="cacheManager" class="org.apache.shiro.cache.ehcache.EhCacheManager">
+        <property name="cacheManagerConfigFile" value="classpath:ehcache.xml"/> 
+    </bean>
+```
+
+
+
 ## RemberMe
+
+​	Shiro 提供了记住我（RememberMe）的功能，比如访问如淘宝 等一些网站时，关闭了浏览器，下次再打开时还是能记住你是谁， 下次访问时无需再登录即可访问，基本流程如下： 
+
+- 1、首先在登录页面选中 RememberMe 然后登录成功；如果是 浏览器登录，一般会把 RememberMe 的Cookie 写到客户端并 保存下来；
+- 2、关闭浏览器再重新打开；会发现浏览器还是记住你的；
+- 3、访问一般的网页服务器端还是知道你是谁，且能正常访问；
+- 4、但是比如我们访问淘宝时，如果要查看我的订单或进行支付 时，此时还是需要再进行身份认证的，以确保当前用户还是你 
+
+### 认证和记住我 
+
+- subject.isAuthenticated() 表示用户进行了身份验证登录的， 即使有 Subject.login 进行了登录；
+- subject.isRemembered()：表示用户是通过记住我登录的， 此时可能并不是真正的你（如你的朋友使用你的电脑，或者 你的cookie 被窃取）在访问的
+-  两者二选一，即 subject.isAuthenticated()==true，则 subject.isRemembered()==false；反之一样。 
+
+### 建议 
+
+- 访问一般网页：如个人在主页之类的，我们使用user 拦截 器即可，user 拦截器只要用户登录 (isRemembered() || isAuthenticated())过即可访问成功；
+- 访问特殊网页：如我的订单，提交订单页面，我们使用 authc 拦截器即可，authc 拦截器会判断用户是否是通过 Subject.login（isAuthenticated()==true）登录的，如 果是才放行，否则会跳转到登录页面叫你重新登录。 
+
+### 实现
+
+​	如果要自己做RememeberMe，需要在登录之前这样创建Token： UsernamePasswordToken(用户名，密码，是否记住我)，且调用 UsernamePasswordToken 的：token.setRememberMe(true); 方法 
+
+```java
+ShiroController.java
+
+		UsernamePasswordToken token = new UsernamePasswordToken(username, password);
+			//remenberme
+			token.setRememberMe(true);
+			
+			try {
+				currentUser.login(token);
+			} catch (AuthenticationException e) {
+				System.out.println("login filed:"+e.getMessage());
+			}
+```
+
+```xml
+securityManager 
+
+<property name="rememberMeManager.cookie.maxAge" value="20"></property>
+```
+
+```java
+FilterChainDefinitionMapBuilder.java
+
+ 		map.put("/user.jsp", "authc,roles[user]");//必须认证，记住没用
+		map.put("/admin.jsp", "authc,roles[admin]");
+		map.put("/list.jsp", "user");	//记住就能访问
+```
+
